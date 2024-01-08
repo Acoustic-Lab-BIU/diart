@@ -105,6 +105,9 @@ def run():
         action="store_true",
         help=f"{argdoc.NORMALIZE_EMBEDDING_WEIGHTS}. Defaults to False",
     )
+    parser.add_argument(
+        "--clustering-timeout", default=float('inf'), type=float, help=f"time to forget a speaker, defaults to inf"
+    )
     args = parser.parse_args()
 
     # Resolve device
