@@ -35,7 +35,6 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
         normalize_embedding_weights: bool = False,
         device: torch.device | None = None,
         sample_rate: int = 16000,
-        clustering_timeout = None,
         **kwargs,
     ):
         # Default segmentation model is pyannote/segmentation
@@ -69,7 +68,6 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        self.clustering_timeout = clustering_timeout
 
     @property
     def duration(self) -> float:
@@ -89,12 +87,9 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
 
 
 class SpeakerDiarization(base.Pipeline):
-    def __init__(self, config: SpeakerDiarizationConfig | None = None,time_generator : Generator = None):
+    def __init__(self, config: SpeakerDiarizationConfig | None = None):
         self._config = SpeakerDiarizationConfig() if config is None else config
-        
-        #time generator informs the clustering module of the current time
-        self.time_generator = time_generator
-        
+
         msg = f"Latency should be in the range [{self._config.step}, {self._config.duration}]"
         assert self._config.step <= self._config.latency <= self._config.duration, msg
 
@@ -144,20 +139,11 @@ class SpeakerDiarization(base.Pipeline):
     @property
     def config(self) -> SpeakerDiarizationConfig:
         return self._config
-    
 
     def set_timestamp_shift(self, shift: float):
         self.timestamp_shift = shift
 
     def reset(self):
-        def default_time_generator():
-            t = 0
-            while True:
-                yield t
-                t+=self._config.step
-                
-        time_generator = self.time_generator or default_time_generator()
-        
         self.set_timestamp_shift(0)
         self.clustering = OnlineSpeakerClustering(
             self.config.tau_active,
@@ -165,8 +151,6 @@ class SpeakerDiarization(base.Pipeline):
             self.config.delta_new,
             "cosine",
             self.config.max_speakers,
-            self.config.clustering_timeout or None,
-            time_generator=time_generator
         )
         self.chunk_buffer, self.pred_buffer = [], []
 
