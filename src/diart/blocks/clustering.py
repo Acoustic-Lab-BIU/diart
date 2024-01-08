@@ -2,11 +2,18 @@ from typing import Optional, List, Iterable, Tuple
 
 import numpy as np
 import torch
+import time
 from pyannote.core import SlidingWindowFeature
 
 from ..mapping import SpeakerMap, SpeakerMapBuilder
 
+def default_time_generator(step=0.5):
+    time = 0
+    while True:
+        yield time
+        time+=step
 
+    
 class OnlineSpeakerClustering:
     """Implements constrained incremental online clustering of speakers and manages cluster centers.
 
@@ -35,6 +42,8 @@ class OnlineSpeakerClustering:
         delta_new: float,
         metric: Optional[str] = "cosine",
         max_speakers: int = 20,
+        timeout=float('inf'),
+        time_generator = default_time_generator()
     ):
         self.tau_active = tau_active
         self.rho_update = rho_update
@@ -42,6 +51,10 @@ class OnlineSpeakerClustering:
         self.metric = metric
         self.max_speakers = max_speakers
         self.centers: Optional[np.ndarray] = None
+        self.center_update_times : Optional[np.ndarray] = None
+        self.timeout : Optional[float] = timeout
+        self.time = 0.0
+        self.time_generator = time_generator
         self.active_centers = set()
         self.blocked_centers = set()
 
@@ -79,6 +92,7 @@ class OnlineSpeakerClustering:
             Dimension of embeddings used for representing a speaker.
         """
         self.centers = np.zeros((self.max_speakers, dimension))
+        self.center_update_times = np.zeros(self.max_speakers)
         self.active_centers = set()
         self.blocked_centers = set()
 
@@ -97,6 +111,7 @@ class OnlineSpeakerClustering:
             for l_spk, g_spk in assignments:
                 assert g_spk in self.active_centers, "Cannot update unknown centers"
                 self.centers[g_spk] += embeddings[l_spk]
+                self.center_update_times[g_spk] = self.time
 
     def add_center(self, embedding: np.ndarray) -> int:
         """Add a new speaker centroid initialized to a given embedding
@@ -113,9 +128,20 @@ class OnlineSpeakerClustering:
         """
         center = self.get_next_center_position()
         self.centers[center] = embedding
+        self.center_update_times[center] = self.time
         self.active_centers.add(center)
         return center
 
+    def remove_stale_centers(self):
+        if self.timeout is None:
+            return
+        times_since_update = self.time - self.center_update_times
+        times_since_update[np.argwhere(self.center_update_times==0)] = 0
+        stale_centers = np.argwhere(times_since_update>self.timeout).flatten()
+        self.centers[stale_centers,:] = 0
+        [self.active_centers.discard(sc) for sc in stale_centers]
+        [self.blocked_centers.discard(sc) for sc in stale_centers]
+        
     def identify(
         self, segmentation: SlidingWindowFeature, embeddings: torch.Tensor
     ) -> SpeakerMap:
@@ -206,6 +232,9 @@ class OnlineSpeakerClustering:
             valid_map = valid_map.set_source_speaker(
                 spk, self.add_center(embeddings[spk])
             )
+            
+        self.time =next(self.time_generator)
+        self.remove_stale_centers()
 
         return valid_map
 
