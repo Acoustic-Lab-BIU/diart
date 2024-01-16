@@ -17,6 +17,7 @@ from .segmentation import SpeakerSegmentation
 from .utils import Binarize
 from .. import models as m
 from .GMM_vad import measure_vad
+from webrtcvad import Vad
 
 
 class SpeakerDiarizationConfig(base.PipelineConfig):
@@ -126,6 +127,8 @@ class SpeakerDiarization(base.Pipeline):
         )
         self.binarize = Binarize(self._config.tau_active)
 
+        self.vad = Vad()
+        
         # Internal state, handle with care
         self.timestamp_shift = 0
         self.clustering = None
@@ -178,14 +181,14 @@ class SpeakerDiarization(base.Pipeline):
         #TODO figure out why this is so slow
         # apply vad on top of segmentation, if vad is false and segmentation is true set true
         # if vad is true and segmentation is false, set false
-        # this can be achieved with the `crop` method
+        
         sr = self.config.sample_rate
         vad_seg_samples = int(self.config.step * self.config.sample_rate / self.config.vad_resolution)
                 
         #convert to pcm 16
         wav_pcm16 = (wav.data.copy().flatten()*2**15).astype(np.int16)
         wav_pcm16 = wav_pcm16.reshape(len(wav_pcm16)//vad_seg_samples,vad_seg_samples)
-        vad = np.apply_along_axis(measure_vad,1,wav_pcm16, sr=self.config.sample_rate)
+        vad = np.apply_along_axis(measure_vad,1,wav_pcm16, sr=self.config.sample_rate,vad_object=self.vad)
         
         #convert to pyannote segments
         active_segments = [Segment(i*vad_seg_samples/sr,(i+1)*vad_seg_samples/sr) \
@@ -194,6 +197,7 @@ class SpeakerDiarization(base.Pipeline):
         #join consecutive segments
         vad_timeline = Timeline(active_segments).support()
         
+        #FIXME crop doesn't do what I though it would
         seg.crop(vad_timeline)
         return seg
             
