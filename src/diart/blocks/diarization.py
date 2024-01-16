@@ -4,7 +4,7 @@ from typing import Sequence, Generator
 
 import numpy as np
 import torch
-from pyannote.core import Annotation, SlidingWindowFeature, SlidingWindow, Segment
+from pyannote.core import Annotation, SlidingWindowFeature, SlidingWindow, Segment, Timeline
 from pyannote.metrics.base import BaseMetric
 from pyannote.metrics.diarization import DiarizationErrorRate
 from typing_extensions import Literal
@@ -16,6 +16,7 @@ from .embedding import OverlapAwareSpeakerEmbedding
 from .segmentation import SpeakerSegmentation
 from .utils import Binarize
 from .. import models as m
+from .GMM_vad import measure_vad
 
 
 class SpeakerDiarizationConfig(base.PipelineConfig):
@@ -36,6 +37,7 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
         device: torch.device | None = None,
         sample_rate: int = 16000,
         clustering_timeout = None,
+        vad_resolution = 4,
         **kwargs,
     ):
         # Default segmentation model is pyannote/segmentation
@@ -70,6 +72,7 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.clustering_timeout = clustering_timeout
+        self.vad_resolution=vad_resolution
 
     @property
     def duration(self) -> float:
@@ -170,6 +173,30 @@ class SpeakerDiarization(base.Pipeline):
         )
         self.chunk_buffer, self.pred_buffer = [], []
 
+    def apply_vad_on_segmentation(self,wav:SlidingWindowFeature,
+                                  seg:SlidingWindowFeature):
+        #TODO figure out why this is so slow
+        # apply vad on top of segmentation, if vad is false and segmentation is true set true
+        # if vad is true and segmentation is false, set false
+        # this can be achieved with the `crop` method
+        sr = self.config.sample_rate
+        vad_seg_samples = int(self.config.step * self.config.sample_rate / self.config.vad_resolution)
+                
+        #convert to pcm 16
+        wav_pcm16 = (wav.data.copy().flatten()*2**15).astype(np.int16)
+        wav_pcm16 = wav_pcm16.reshape(len(wav_pcm16)//vad_seg_samples,vad_seg_samples)
+        vad = np.apply_along_axis(measure_vad,1,wav_pcm16, sr=self.config.sample_rate)
+        
+        #convert to pyannote segments
+        active_segments = [Segment(i*vad_seg_samples/sr,(i+1)*vad_seg_samples/sr) \
+                            for i,v in enumerate(vad > self.config.tau_active) if v]
+        
+        #join consecutive segments
+        vad_timeline = Timeline(active_segments).support()
+        
+        seg.crop(vad_timeline)
+        return seg
+            
     def __call__(
         self, waveforms: Sequence[SlidingWindowFeature]
     ) -> Sequence[tuple[Annotation, SlidingWindowFeature]]:
@@ -200,6 +227,7 @@ class SpeakerDiarization(base.Pipeline):
 
         # Extract segmentation and embeddings
         segmentations = self.segmentation(batch)  # shape (batch, frames, speakers)
+
         # embeddings has shape (batch, speakers, emb_dim)
         embeddings = self.embedding(batch, segmentations)
 
@@ -214,7 +242,10 @@ class SpeakerDiarization(base.Pipeline):
                 step=seg_resolution,
             )
             seg = SlidingWindowFeature(seg.cpu().numpy(), sw)
-
+            
+            #TODO do this before embedding
+            seg = self.apply_vad_on_segmentation(wav,seg)
+            
             # Update clustering state and permute segmentation
             permuted_seg = self.clustering(seg, emb)
 
