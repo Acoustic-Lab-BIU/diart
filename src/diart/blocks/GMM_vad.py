@@ -5,7 +5,7 @@ import soundfile as sf
 
 VAD = webrtcvad.Vad()
 
-def measure_vad(wav,sr=16000, vad_object=None):
+def measure_vad(wav,sr=16000, vad_object=None,step_ms=1):
     """uses webrtc vad to measure vad probability over a waveform, segment size is 30ms
 
     Args:
@@ -17,7 +17,7 @@ def measure_vad(wav,sr=16000, vad_object=None):
     """
     vad_object = vad_object or VAD
     wav = torch.tensor(wav).unsqueeze(0)
-    frames = wav.unfold(dimension=1, size=int(sr*(30/1000)), step=int(sr*(1/1000)))
+    frames = wav.unfold(dimension=1, size=int(sr*(30/1000)), step=int(sr*(step_ms/1000)))
     total_vad = 0
     for i in range(frames.shape[1]):
         frame = frames[:,i,:].squeeze(0).tolist()
@@ -30,7 +30,6 @@ if __name__ == '__main__':
     STEP = 0.5
     CHANNELS = 1 
     RATE = 16000
-    SAMPLE_RATE = 16000
     FRAME_LEN = STEP
     THRESHOLD = 0.5
     # print(cfg)
