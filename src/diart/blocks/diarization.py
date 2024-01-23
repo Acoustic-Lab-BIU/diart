@@ -178,8 +178,7 @@ class SpeakerDiarization(base.Pipeline):
 
     def apply_vad(self,wav:SlidingWindowFeature,resolution:float):
         #TODO figure out why this is so slow
-        # apply vad on top of segmentation, if vad is false and segmentation is true set true
-        # if vad is true and segmentation is false, set false
+       
         
         sr = self.config.sample_rate
         vad_seg_samples = int(np.floor(resolution * sr)) *2
@@ -193,7 +192,26 @@ class SpeakerDiarization(base.Pipeline):
         binarized_vad = np.repeat(vad > self.config.tau_active,2)
         
         return binarized_vad
-            
+    
+    def apply_vad_batch(self,wav:torch.Tensor,resolution:float):
+        #TODO figure out why this is so slow
+        
+        sr = self.config.sample_rate
+        vad_seg_samples = int(np.floor(resolution * sr)) *2
+        assert vad_seg_samples>=480, 'vad resolution too high!'
+        
+        vad = []
+        #convert to pcm 16
+        wav_pcm16 = (wav*2**15).to(torch.int16)
+        for batch in torch.unbind(wav_pcm16,dim=0):
+            batch.resize_(batch.shape[0]//vad_seg_samples,vad_seg_samples)
+            vad.append(torch.tensor([
+                measure_vad(x_i,sr,self.vad,1) for x_i in torch.unbind(batch, dim=0)
+            ]))
+        vad = torch.stack(vad,dim=0)
+        binarized_vad = torch.repeat_interleave(vad > self.config.tau_active,2,dim=1)
+        return binarized_vad
+        
     def __call__(
         self, waveforms: Sequence[SlidingWindowFeature]
     ) -> Sequence[tuple[Annotation, SlidingWindowFeature]]:
@@ -224,10 +242,19 @@ class SpeakerDiarization(base.Pipeline):
 
         # Extract segmentation and embeddings
         segmentations = self.segmentation(batch)  # shape (batch, frames, speakers)
+                
+        seg_resolution = waveforms[0].extent.duration / segmentations.shape[1]
+        
+        vad = self.apply_vad_batch(batch,seg_resolution)     
+        vad = torch.repeat_interleave(vad.unsqueeze(2),segmentations.shape[-1],2)
+        vad.resize_as_(segmentations)
+        
+        #filter segmentation based on vad results
+        segmentations*=vad
+        
         # embeddings has shape (batch, speakers, emb_dim)
         embeddings = self.embedding(batch, segmentations)
 
-        seg_resolution = waveforms[0].extent.duration / segmentations.shape[1]
         
         outputs = []
         for wav, seg, emb in zip(waveforms, segmentations, embeddings):
@@ -237,18 +264,9 @@ class SpeakerDiarization(base.Pipeline):
                 duration=seg_resolution,
                 step=seg_resolution,
             )
-            
-            sw_ = sw.copy()
-            
-            external_vad = self.apply_vad(wav,seg_resolution)
-            external_vad.resize(seg.shape[0])
-            seg = seg.cpu().numpy() * np.expand_dims(external_vad,axis=1)\
-                                        .repeat(seg.shape[1],axis=1)
-            
-            seg = SlidingWindowFeature(seg, sw)           
-            
-            #TODO do this before embedding
-            
+               
+            seg = SlidingWindowFeature(seg.cpu().numpy(), sw)           
+                        
             # Update clustering state and permute segmentation
             permuted_seg = self.clustering(seg, emb)
 
