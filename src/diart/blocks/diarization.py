@@ -39,7 +39,7 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
         sample_rate: int = 16000,
         clustering_timeout = None,
         vad_resolution = 4,
-        vad_filtering=False
+        vad_filtering=False,
         **kwargs,
     ):
         # Default segmentation model is pyannote/segmentation
