@@ -39,6 +39,7 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
         sample_rate: int = 16000,
         clustering_timeout = None,
         vad_resolution = 4,
+        vad_filtering=False
         **kwargs,
     ):
         # Default segmentation model is pyannote/segmentation
@@ -74,6 +75,7 @@ class SpeakerDiarizationConfig(base.PipelineConfig):
         )
         self.clustering_timeout = clustering_timeout
         self.vad_resolution=vad_resolution
+        self.vad_filtering=vad_filtering
 
     @property
     def duration(self) -> float:
@@ -245,12 +247,13 @@ class SpeakerDiarization(base.Pipeline):
                 
         seg_resolution = waveforms[0].extent.duration / segmentations.shape[1]
         
-        vad = self.apply_vad_batch(batch,seg_resolution)     
-        vad = torch.repeat_interleave(vad.unsqueeze(2),segmentations.shape[-1],2)
-        vad.resize_as_(segmentations)
-        
-        #filter segmentation based on vad results
-        segmentations*=vad
+        if self.config.vad_filtering:
+            vad = self.apply_vad_batch(batch,seg_resolution)     
+            vad = torch.repeat_interleave(vad.unsqueeze(2),segmentations.shape[-1],2)
+            vad.resize_as_(segmentations)
+            
+            #filter segmentation based on vad results
+            segmentations*=vad
         
         # embeddings has shape (batch, speakers, emb_dim)
         embeddings = self.embedding(batch, segmentations)
