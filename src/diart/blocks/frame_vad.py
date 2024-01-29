@@ -128,3 +128,93 @@ class FrameVAD:
             preds = 1 if probas_s >= threshold else 0
             s = [preds, str(vocab[preds]), probs[0].item(), probs[1].item(), str(logits)]
         return s
+        
+        
+if __name__ == '__main__':
+    vad_model = nemo_asr.models.EncDecClassificationModel.from_pretrained('vad_multilingual_marblenet')
+    cfg = vad_model._cfg
+    STEP = 0.01
+    WINDOW_SIZE = 0.31
+    CHANNELS = 1 
+    RATE = 16000
+    SAMPLE_RATE = 16000
+    FRAME_LEN = STEP
+    THRESHOLD = 0.5
+    # print(cfg)
+    CHUNK_SIZE = int(STEP * RATE)
+    vad = FrameVAD(model_definition = {
+                    'sample_rate': RATE,
+                    'AudioToMFCCPreprocessor': cfg.preprocessor,
+                    'JasperEncoder': cfg.encoder,
+                    'labels': cfg.labels
+                },
+                threshold=THRESHOLD,
+                frame_len=FRAME_LEN, frame_overlap=(WINDOW_SIZE - FRAME_LEN) / 2, 
+                offset=0)
+    
+    vad.reset()
+
+    # import pyaudio as pa
+    
+    # p = pa.PyAudio()
+    # print('Available audio input devices:')
+    # input_devices = []
+    # for i in range(p.get_device_count()):
+    #     dev = p.get_device_info_by_index(i)
+    #     if dev.get('maxInputChannels'):
+    #         input_devices.append(i)
+    #         print(i, dev.get('name'))
+
+    # if len(input_devices):
+    #     dev_idx = -2
+    #     while dev_idx not in input_devices:
+    #         print('Please type input device ID:')
+    #         dev_idx = int(input())
+
+    #     empty_counter = 0
+
+    def callback(in_data):
+        global empty_counter
+        signal = np.frombuffer(in_data, dtype=np.int16)
+        text = vad.transcribe(signal)
+        if len(text):
+            # if text[1] != 'speech':
+            print(text,end='\n')
+            empty_counter = vad.offset
+        elif empty_counter > 0:
+            empty_counter -= 1
+            if empty_counter == 0:
+                print(' ',end='\n')
+
+    # stream = p.open(format=pa.paInt16,
+    #                 channels=CHANNELS,
+    #                 rate=SAMPLE_RATE,
+    #                 input=True,
+    #                 stream_callback=callback,
+    #                 frames_per_buffer=CHUNK_SIZE)
+
+    print('Listening...')
+
+    import wave
+    
+    # wf = wave.open('/home/diarze_test.wav','r')
+    wf, fs = sf.read('/home/storage01/diart/rttm_ariel_2/wav_data/3_99.wav',dtype='int16')
+    data = wf[:CHUNK_SIZE]
+    wf = wf[CHUNK_SIZE:]
+    # data = wf.readframes(CHUNK_SIZE)
+    while len(data):
+        callback(data)
+        data = wf[:CHUNK_SIZE]
+        wf = wf[CHUNK_SIZE:]
+        # data = wf.readframes(CHUNK_SIZE)
+    
+    # stream.start_stream()
+    
+    # Interrupt kernel and then speak for a few more words to exit the pyaudio loop !
+    # try:
+    #     while stream.is_active():
+    #         time.sleep(0.1)
+    # finally:        
+    #     stream.stop_stream()
+    #     stream.close()
+    #     p.terminate()
